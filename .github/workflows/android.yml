@@ -1,0 +1,51 @@
+name: Build Android APK
+
+# Build an installable APK in the cloud (no EAS, no local Android toolchain).
+# Trigger it manually from the Actions tab, or on every push to the branch.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'claude/**']
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ubuntu-latest ships with the Android SDK preinstalled, but this makes
+      # sure the required platform + build-tools are present and licensed.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        run: |
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-novel-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
