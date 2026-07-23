@@ -143,7 +143,7 @@ export default function SettingsScreen() {
         <Text style={styles.sectionLabel}>ABOUT</Text>
         <View style={styles.card}>
           <Text style={styles.rowSub}>
-            Offline Novel reads from novelphoenix.com for your personal offline
+            Phoenix Novel reads from novelphoenix.com for your personal offline
             use. No account, no server — your library, reading progress and
             downloads never leave this device.
           </Text>
