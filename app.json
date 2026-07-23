@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Phoenix Novel",
+    "slug": "phoenix-novel",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "phoenixnovel",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.phoenixnovel.app",
+      "infoPlist": {
+        "UIBackgroundModes": ["fetch"]
+      }
+    },
+    "android": {
+      "package": "com.phoenixnovel.app",
+      "permissions": ["INTERNET", "POST_NOTIFICATIONS", "RECEIVE_BOOT_COMPLETED", "WAKE_LOCK"]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-notifications",
+        {
+          "color": "#7c5cff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
