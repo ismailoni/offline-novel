@@ -9,6 +9,7 @@ import {
   Alert,
   TextInput,
   Keyboard,
+  Modal,
 } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,7 +25,7 @@ import {
 } from '@/services/library';
 import { clearUpdateFlag } from '@/db/novels';
 import {
-  downloadNovel,
+  downloadChapters,
   cancelDownload,
   isDownloading,
   DownloadProgress,
@@ -40,6 +41,9 @@ export default function NovelDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [descExpanded, setDescExpanded] = useState(false);
+  const [showDlOptions, setShowDlOptions] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
 
   // Chapter list paging so long novels don't scroll endlessly.
   const CHAPTERS_PER_PAGE = 100;
@@ -115,17 +119,46 @@ export default function NovelDetailScreen() {
     }
   }, [novel, hydrate]);
 
-  const startDownloadAll = useCallback(async () => {
+  // The download control cancels an in-flight download, otherwise it opens the
+  // custom-download options sheet.
+  const onDownloadPress = useCallback(() => {
     if (!novel) return;
     if (isDownloading(novel.id)) {
       cancelDownload(novel.id);
       return;
     }
-    setDl({ total: 0, completed: 0, failed: 0 });
-    await downloadNovel(novel.id, (p) => setDl({ ...p }));
-    setDl(null);
-    hydrate();
-  }, [novel, hydrate]);
+    setRangeFrom('');
+    setRangeTo('');
+    setShowDlOptions(true);
+  }, [novel]);
+
+  const runDownload = useCallback(
+    async (subset: ChapterRecord[]) => {
+      if (!novel) return;
+      setShowDlOptions(false);
+      const pending = subset.filter((c) => !c.contentPath);
+      if (pending.length === 0) {
+        Alert.alert('Nothing to download', 'Those chapters are already saved on your device.');
+        return;
+      }
+      setDl({ total: pending.length, completed: 0, failed: 0 });
+      await downloadChapters(novel.id, subset, (p) => setDl({ ...p }));
+      setDl(null);
+      hydrate();
+    },
+    [novel, hydrate],
+  );
+
+  const downloadRange = useCallback(() => {
+    const from = parseInt(rangeFrom.trim(), 10);
+    const to = parseInt(rangeTo.trim(), 10);
+    const max = chapters.length;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from < 1 || to > max || from > to) {
+      Alert.alert('Invalid range', `Enter a range between 1 and ${max}, with "from" no greater than "to".`);
+      return;
+    }
+    runDownload(chapters.slice(from - 1, to));
+  }, [rangeFrom, rangeTo, chapters, runDownload]);
 
   const openChapter = useCallback((chapter: ChapterRecord) => {
     router.push({ pathname: '/reader/[chapterId]', params: { chapterId: chapter.id } });
@@ -253,34 +286,59 @@ export default function NovelDetailScreen() {
             </View>
 
             <View style={styles.actions}>
-              <Pressable style={[styles.btn, styles.btnPrimary]} onPress={resumeReading}>
+              <Pressable
+                style={[styles.btn, styles.btnPrimary]}
+                onPress={resumeReading}
+                accessibilityRole="button"
+                accessibilityLabel={progress ? `Continue chapter ${progress.chapterOrder}` : 'Start reading'}
+              >
                 <Ionicons name="book" size={16} color={appTheme.accentText} />
                 <Text style={styles.btnPrimaryText}>
                   {progress ? `Continue Ch. ${progress.chapterOrder}` : 'Start reading'}
                 </Text>
               </Pressable>
-              <Pressable style={styles.iconBtn} onPress={toggleLibrary}>
+              <Pressable
+                style={styles.iconBtn}
+                onPress={toggleLibrary}
+                accessibilityRole="button"
+                accessibilityLabel={novel.inLibrary ? 'Remove from library' : 'Add to library'}
+              >
                 <Ionicons
                   name={novel.inLibrary ? 'heart' : 'heart-outline'}
                   size={22}
                   color={novel.inLibrary ? appTheme.accent : appTheme.text}
                 />
               </Pressable>
-              <Pressable style={styles.iconBtn} onPress={startDownloadAll}>
+              <Pressable
+                style={styles.iconBtn}
+                onPress={onDownloadPress}
+                accessibilityRole="button"
+                accessibilityLabel={dl ? 'Stop download' : 'Download chapters'}
+              >
                 <Ionicons
                   name={dl ? 'stop-circle' : 'download-outline'}
                   size={22}
-                  color={appTheme.text}
+                  color={dl ? appTheme.danger : appTheme.text}
                 />
               </Pressable>
             </View>
 
             {dl ? (
-              <Text style={styles.dlStatus}>
-                Downloading {dl.completed}/{dl.total}
-                {dl.failed ? ` · ${dl.failed} failed` : ''}
-                {dl.currentTitle ? ` · ${dl.currentTitle}` : ''}
-              </Text>
+              <View style={styles.dlWrap}>
+                <Text style={styles.dlStatus}>
+                  Downloading {dl.completed}/{dl.total}
+                  {dl.failed ? ` · ${dl.failed} failed` : ''}
+                  {dl.currentTitle ? ` · ${dl.currentTitle}` : ''}
+                </Text>
+                <View style={styles.dlTrack}>
+                  <View
+                    style={[
+                      styles.dlFill,
+                      { width: `${dl.total > 0 ? Math.round((dl.completed / dl.total) * 100) : 0}%` },
+                    ]}
+                  />
+                </View>
+              </View>
             ) : null}
 
             {novel.description ? (
@@ -389,6 +447,85 @@ export default function NovelDetailScreen() {
           );
         }}
       />
+
+      <Modal
+        visible={showDlOptions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDlOptions(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowDlOptions(false)}>
+          <Pressable style={styles.sheet} onPress={() => Keyboard.dismiss()}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Download chapters</Text>
+            <Text style={styles.sheetSub}>
+              {chapters.length - downloadedCount} of {chapters.length} not yet downloaded.
+            </Text>
+
+            <Pressable
+              style={styles.dlOption}
+              onPress={() => runDownload(chapters)}
+              android_ripple={{ color: '#222' }}
+            >
+              <Ionicons name="cloud-download-outline" size={20} color={appTheme.accent} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dlOptionTitle}>All remaining</Text>
+                <Text style={styles.dlOptionSub}>Every chapter not already on your device</Text>
+              </View>
+            </Pressable>
+
+            {progress ? (
+              <Pressable
+                style={styles.dlOption}
+                onPress={() => runDownload(chapters.slice(Math.max(0, progress.chapterOrder - 1)))}
+                android_ripple={{ color: '#222' }}
+              >
+                <Ionicons name="bookmark-outline" size={20} color={appTheme.accent} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.dlOptionTitle}>From where I'm reading</Text>
+                  <Text style={styles.dlOptionSub}>Ch. {progress.chapterOrder} to the end</Text>
+                </View>
+              </Pressable>
+            ) : null}
+
+            <View style={styles.dlRangeLabelRow}>
+              <Ionicons name="options-outline" size={20} color={appTheme.accent} />
+              <Text style={styles.dlOptionTitle}>Custom range</Text>
+            </View>
+            <View style={styles.dlRangeRow}>
+              <TextInput
+                style={styles.rangeInput}
+                value={rangeFrom}
+                onChangeText={setRangeFrom}
+                keyboardType="number-pad"
+                placeholder="From"
+                placeholderTextColor={appTheme.textMuted}
+              />
+              <Text style={styles.rangeDash}>–</Text>
+              <TextInput
+                style={styles.rangeInput}
+                value={rangeTo}
+                onChangeText={setRangeTo}
+                keyboardType="number-pad"
+                placeholder="To"
+                placeholderTextColor={appTheme.textMuted}
+              />
+              <Pressable
+                style={styles.rangeGoBtn}
+                onPress={downloadRange}
+                accessibilityRole="button"
+                accessibilityLabel="Download chapter range"
+              >
+                <Text style={styles.rangeGoText}>Download</Text>
+              </Pressable>
+            </View>
+
+            <Pressable style={styles.dlCancel} onPress={() => setShowDlOptions(false)}>
+              <Text style={styles.dlCancelText}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -423,7 +560,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dlStatus: { color: appTheme.textMuted, fontSize: 12, paddingHorizontal: 16, marginTop: 10 },
+  dlWrap: { paddingHorizontal: 16, marginTop: 10 },
+  dlStatus: { color: appTheme.textMuted, fontSize: 12 },
+  dlTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: appTheme.border,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  dlFill: { height: '100%', borderRadius: 2, backgroundColor: appTheme.accent },
   desc: { color: appTheme.text, fontSize: 14, lineHeight: 21, paddingHorizontal: 16, marginTop: 16 },
   descToggle: { color: appTheme.accent, fontSize: 13, fontWeight: '600', paddingHorizontal: 16, marginTop: 4 },
   genres: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, marginTop: 14 },
@@ -501,4 +647,56 @@ const styles = StyleSheet.create({
   chapterTitle: { color: appTheme.text, fontSize: 14 },
   chapterCurrent: { color: appTheme.accent, fontWeight: '700' },
   chapterDate: { color: appTheme.textMuted, fontSize: 11, marginTop: 3 },
+
+  modalBackdrop: { flex: 1, backgroundColor: '#000000aa', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: appTheme.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 32,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: appTheme.border,
+    marginBottom: 14,
+  },
+  sheetTitle: { color: appTheme.text, fontSize: 18, fontWeight: '800' },
+  sheetSub: { color: appTheme.textMuted, fontSize: 13, marginTop: 4, marginBottom: 12 },
+  dlOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: appTheme.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+  },
+  dlOptionTitle: { color: appTheme.text, fontSize: 15, fontWeight: '600' },
+  dlOptionSub: { color: appTheme.textMuted, fontSize: 12, marginTop: 2 },
+  dlRangeLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 4, marginBottom: 8 },
+  dlRangeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  rangeInput: {
+    flex: 1,
+    backgroundColor: appTheme.card,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: appTheme.text,
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  rangeDash: { color: appTheme.textMuted, fontSize: 16 },
+  rangeGoBtn: {
+    backgroundColor: appTheme.accent,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  rangeGoText: { color: appTheme.accentText, fontWeight: '700', fontSize: 14 },
+  dlCancel: { alignItems: 'center', paddingVertical: 14, marginTop: 6 },
+  dlCancelText: { color: appTheme.textMuted, fontSize: 15, fontWeight: '600' },
 });

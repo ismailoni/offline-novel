@@ -56,7 +56,13 @@ export default function LibraryScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.heading}>Library</Text>
-        {status ? <Text style={styles.status}>{status}</Text> : null}
+        {status ? (
+          <Text style={styles.status}>{status}</Text>
+        ) : novels.length > 0 ? (
+          <Text style={styles.status}>
+            {novels.length} {novels.length === 1 ? 'novel' : 'novels'}
+          </Text>
+        ) : null}
       </View>
       <FlatList
         data={novels}

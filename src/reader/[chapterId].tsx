@@ -30,6 +30,7 @@ export default function ReaderScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const [siblings, setSiblings] = useState<ChapterRecord[]>([]);
   const [showTools, setShowTools] = useState(false);
+  const [progress, setProgressFrac] = useState(0);
   const restoredRef = useRef(false);
   const lastSavedY = useRef(0);
 
@@ -56,11 +57,17 @@ export default function ReaderScreen() {
     restoredRef.current = true;
   }, [chapter]);
 
-  // Persist reading position (throttled).
+  // Track scroll for the reading-progress bar and persist position (throttled).
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!chapter) return;
-      const y = e.nativeEvent.contentOffset.y;
+      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      const y = contentOffset.y;
+
+      const scrollable = contentSize.height - layoutMeasurement.height;
+      const frac = scrollable > 0 ? y / scrollable : 0;
+      setProgressFrac(Math.max(0, Math.min(1, frac)));
+
       if (Math.abs(y - lastSavedY.current) < 200) return;
       lastSavedY.current = y;
       saveProgress({
@@ -112,7 +119,7 @@ export default function ReaderScreen() {
           <ScrollView
             ref={scrollRef}
             onScroll={onScroll}
-            scrollEventThrottle={100}
+            scrollEventThrottle={32}
             onContentSizeChange={onContentSizeChange}
             contentContainerStyle={{
               paddingHorizontal: settings.marginH,
@@ -162,6 +169,16 @@ export default function ReaderScreen() {
             </View>
           </ScrollView>
 
+          {/* Thin reading-progress bar pinned to the top of the chapter. */}
+          <View style={styles.progressBarTrack} pointerEvents="none">
+            <View
+              style={[
+                styles.progressBarFill,
+                { width: `${Math.round(progress * 100)}%`, backgroundColor: appTheme.accent },
+              ]}
+            />
+          </View>
+
           {showTools ? (
             <ReaderTools
               reader={reader.id}
@@ -171,6 +188,7 @@ export default function ReaderScreen() {
               hasPrev={hasPrev}
               hasNext={hasNext}
               position={idx >= 0 ? `Ch. ${chapter?.orderIndex ?? idx + 1} / ${siblings.length}` : ''}
+              percent={Math.round(progress * 100)}
             />
           ) : null}
         </>
@@ -187,6 +205,7 @@ function ReaderTools({
   hasPrev,
   hasNext,
   position,
+  percent,
 }: {
   reader: ReaderThemeId;
   onClose: () => void;
@@ -195,16 +214,34 @@ function ReaderTools({
   hasPrev: boolean;
   hasNext: boolean;
   position: string;
+  percent: number;
 }) {
   const s = useReaderSettings();
   return (
     <SafeAreaView style={styles.toolsWrap} edges={['top', 'bottom']}>
       <View style={styles.topBar}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Back to novel"
+        >
           <Ionicons name="arrow-back" size={24} color={appTheme.text} />
         </Pressable>
-        {position ? <Text style={styles.topBarTitle}>{position}</Text> : <View />}
-        <Pressable onPress={onClose} hitSlop={12}>
+        {position ? (
+          <View style={styles.topBarCenter}>
+            <Text style={styles.topBarTitle}>{position}</Text>
+            <Text style={styles.topBarSub}>{percent}% read</Text>
+          </View>
+        ) : (
+          <View />
+        )}
+        <Pressable
+          onPress={onClose}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Close reading tools"
+        >
           <Ionicons name="close" size={24} color={appTheme.text} />
         </Pressable>
       </View>
@@ -340,6 +377,16 @@ const styles = StyleSheet.create({
   navDisabled: { opacity: 0.3 },
   navText: { fontSize: 15, fontWeight: '600' },
 
+  progressBarTrack: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: '#00000022',
+  },
+  progressBarFill: { height: '100%' },
+
   toolsWrap: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between' },
   toolsBackdrop: { flex: 1 },
   topBar: {
@@ -350,7 +397,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: appTheme.surface + 'ee',
   },
+  topBarCenter: { alignItems: 'center' },
   topBarTitle: { color: appTheme.text, fontSize: 14, fontWeight: '700' },
+  topBarSub: { color: appTheme.textMuted, fontSize: 11, marginTop: 1 },
   navToolRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

@@ -6,6 +6,7 @@ import {
   FlatList,
   StyleSheet,
   ActivityIndicator,
+  Pressable,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -81,6 +82,16 @@ export default function BrowseScreen() {
           autoCorrect={false}
           returnKeyType="search"
         />
+        {query.length > 0 ? (
+          <Pressable
+            onPress={() => setQuery('')}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Ionicons name="close-circle" size={18} color={appTheme.textMuted} />
+          </Pressable>
+        ) : null}
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}

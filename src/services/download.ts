@@ -59,11 +59,24 @@ export async function downloadNovel(
   novelId: string,
   onProgress?: (p: DownloadProgress) => void,
 ): Promise<DownloadProgress> {
+  const chapters = await chaptersDb.getChapters(novelId);
+  return downloadChapters(novelId, chapters, onProgress);
+}
+
+/**
+ * Download a specific set of chapters (already-downloaded ones are skipped).
+ * Powers the custom-download options on the novel screen — a range, the
+ * unread tail, and so on all resolve to a list of chapters passed here.
+ */
+export async function downloadChapters(
+  novelId: string,
+  chapters: ChapterRecord[],
+  onProgress?: (p: DownloadProgress) => void,
+): Promise<DownloadProgress> {
   const novel = await novelsDb.getNovel(novelId);
   if (!novel) throw new Error('Novel not found');
   const source = getSource(novel.sourceId);
 
-  const chapters = await chaptersDb.getChapters(novelId);
   const pending = chapters.filter((c) => !c.contentPath);
   const progress: DownloadProgress = {
     total: pending.length,
