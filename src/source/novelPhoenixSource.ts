@@ -121,22 +121,36 @@ export class NovelPhoenixSource implements NovelSource {
   async getChapters(novel: NovelDetail): Promise<ChapterMeta[]> {
     // Plain server-rendered, paginated HTML — no AJAX fragment/admin-ajax
     // involved here, unlike Madara.
+    //
+    // We do NOT trust the numeric pagination widget to decide when to stop.
+    // On long novels its rendered page-number window truncates (e.g.
+    // `1 … 9 10 11 … 25`), so probing for `page+1` as a literal `.page-item`
+    // falsely reported "no next page" partway through and silently dropped
+    // the tail — a 2500-chapter novel stopped at ~1100. Instead we walk pages
+    // until one yields no *new* chapters (empty, or an out-of-range page that
+    // the site clamps back to the last page), deduping by id along the way.
     const chapters: ChapterMeta[] = [];
+    const seen = new Set<string>();
     const base = novel.url.replace(/\/+$/, '');
-    for (let page = 1; ; page++) {
+    const MAX_PAGES = 2000; // hard safety cap against a pathological loop
+    for (let page = 1; page <= MAX_PAGES; page++) {
       const url = `${base}/chapters` + (page > 1 ? `?page=${page}` : '');
       const html = await fetchText(url, { referer: novel.url });
       const root = parseHtml(html);
       const rows = root.querySelectorAll(SEL.chapterItem);
       if (rows.length === 0) break;
 
+      let added = 0;
       for (const row of rows) {
         const link = row.querySelector(SEL.chapterLink);
         const href = attr(link, 'href');
         if (!href) continue;
         const chUrl = absoluteUrl(BASE_URL, href);
+        const id = `${novel.id}:${this.slugOf(chUrl)}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
         chapters.push({
-          id: `${novel.id}:${this.slugOf(chUrl)}`,
+          id,
           novelId: novel.id,
           url: chUrl,
           title: text(row.querySelector(SEL.chapterTitle)) || text(link) || 'Chapter',
@@ -146,12 +160,11 @@ export class NovelPhoenixSource implements NovelSource {
             text(row.querySelector(SEL.chapterDate)) ||
             undefined,
         });
+        added++;
       }
 
-      const hasNextPage = root
-        .querySelectorAll('.page-item')
-        .some((el) => el.text.trim() === String(page + 1));
-      if (!hasNextPage) break;
+      // No new chapters on this page → we've reached (or passed) the end.
+      if (added === 0) break;
     }
 
     // Already oldest-first on this site (chapter-no ascends 1..100 on page 1)

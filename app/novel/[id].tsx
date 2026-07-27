@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  TextInput,
+  Keyboard,
 } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,6 +40,12 @@ export default function NovelDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [descExpanded, setDescExpanded] = useState(false);
+
+  // Chapter list paging so long novels don't scroll endlessly.
+  const CHAPTERS_PER_PAGE = 100;
+  const [chapterPage, setChapterPage] = useState(0);
+  const [orderAsc, setOrderAsc] = useState(true);
+  const [gotoText, setGotoText] = useState('');
 
   const hydrate = useCallback(async () => {
     if (!id) return;
@@ -131,6 +139,45 @@ export default function NovelDetailScreen() {
     }
   }, [progress, chapters, openChapter]);
 
+  // Ordered chapter list + jump helpers. Declared before the early return so
+  // hook order stays stable across the loading/loaded transition.
+  const listRef = useRef<FlatList<ChapterRecord>>(null);
+  const orderedChapters = useMemo(
+    () => (orderAsc ? chapters : [...chapters].reverse()),
+    [chapters, orderAsc],
+  );
+  const pageCount = Math.max(1, Math.ceil(orderedChapters.length / CHAPTERS_PER_PAGE));
+  const page = Math.min(chapterPage, pageCount - 1);
+  const pageStart = page * CHAPTERS_PER_PAGE;
+  const pageChapters = orderedChapters.slice(pageStart, pageStart + CHAPTERS_PER_PAGE);
+
+  // Start each newly-selected chapter page from the top of the list.
+  useEffect(() => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [page]);
+
+  const goToChapterNumber = useCallback(() => {
+    const n = parseInt(gotoText.trim(), 10);
+    Keyboard.dismiss();
+    if (!Number.isFinite(n) || n < 1 || n > chapters.length) {
+      Alert.alert('Go to chapter', `Enter a chapter number between 1 and ${chapters.length}.`);
+      return;
+    }
+    // Chapter n lives at ordered position (n-1) when ascending, mirrored when
+    // descending — translate to the page that contains it.
+    const orderedIndex = orderAsc ? n - 1 : chapters.length - n;
+    setChapterPage(Math.floor(orderedIndex / CHAPTERS_PER_PAGE));
+    setGotoText('');
+  }, [gotoText, chapters.length, orderAsc]);
+
+  const jumpToCurrent = useCallback(() => {
+    if (!progress) return;
+    const orderedIndex = orderAsc
+      ? progress.chapterOrder - 1
+      : chapters.length - progress.chapterOrder;
+    if (orderedIndex >= 0) setChapterPage(Math.floor(orderedIndex / CHAPTERS_PER_PAGE));
+  }, [progress, orderAsc, chapters.length]);
+
   if (loading || !novel) {
     return (
       <View style={styles.center}>
@@ -141,12 +188,51 @@ export default function NovelDetailScreen() {
 
   const downloadedCount = chapters.filter((c) => c.contentPath).length;
 
+
+  const renderPageNav = () =>
+    pageCount > 1 ? (
+      <View style={styles.pager}>
+        <Pressable
+          style={[styles.pagerBtn, page === 0 && styles.pagerBtnDisabled]}
+          onPress={() => setChapterPage(0)}
+          disabled={page === 0}
+        >
+          <Ionicons name="play-skip-back" size={16} color={appTheme.text} />
+        </Pressable>
+        <Pressable
+          style={[styles.pagerBtn, page === 0 && styles.pagerBtnDisabled]}
+          onPress={() => setChapterPage((p) => Math.max(0, p - 1))}
+          disabled={page === 0}
+        >
+          <Ionicons name="chevron-back" size={16} color={appTheme.text} />
+        </Pressable>
+        <Text style={styles.pagerLabel}>
+          Page {page + 1} / {pageCount}
+        </Text>
+        <Pressable
+          style={[styles.pagerBtn, page >= pageCount - 1 && styles.pagerBtnDisabled]}
+          onPress={() => setChapterPage((p) => Math.min(pageCount - 1, p + 1))}
+          disabled={page >= pageCount - 1}
+        >
+          <Ionicons name="chevron-forward" size={16} color={appTheme.text} />
+        </Pressable>
+        <Pressable
+          style={[styles.pagerBtn, page >= pageCount - 1 && styles.pagerBtnDisabled]}
+          onPress={() => setChapterPage(pageCount - 1)}
+          disabled={page >= pageCount - 1}
+        >
+          <Ionicons name="play-skip-forward" size={16} color={appTheme.text} />
+        </Pressable>
+      </View>
+    ) : null;
+
   return (
     <>
       <Stack.Screen options={{ title: novel.title, headerBackTitle: 'Back' }} />
       <FlatList
+        ref={listRef}
         style={styles.container}
-        data={chapters}
+        data={pageChapters}
         keyExtractor={(c) => c.id}
         ListHeaderComponent={
           <View>
@@ -219,9 +305,57 @@ export default function NovelDetailScreen() {
             <View style={styles.chaptersHeader}>
               <Text style={styles.chaptersTitle}>Chapters</Text>
               {refreshing ? <ActivityIndicator size="small" color={appTheme.accent} /> : null}
+              <View style={{ flex: 1 }} />
+              <Pressable
+                style={styles.orderBtn}
+                onPress={() => {
+                  setOrderAsc((v) => !v);
+                  setChapterPage(0);
+                }}
+                hitSlop={8}
+              >
+                <Ionicons
+                  name={orderAsc ? 'arrow-down' : 'arrow-up'}
+                  size={14}
+                  color={appTheme.text}
+                />
+                <Text style={styles.orderText}>{orderAsc ? 'Oldest' : 'Newest'}</Text>
+              </Pressable>
             </View>
+
+            {chapters.length > 0 ? (
+              <View style={styles.gotoRow}>
+                <View style={styles.gotoInputWrap}>
+                  <Ionicons name="search" size={15} color={appTheme.textMuted} />
+                  <TextInput
+                    style={styles.gotoInput}
+                    value={gotoText}
+                    onChangeText={setGotoText}
+                    onSubmitEditing={goToChapterNumber}
+                    keyboardType="number-pad"
+                    returnKeyType="go"
+                    placeholder={`Go to chapter (1–${chapters.length})`}
+                    placeholderTextColor={appTheme.textMuted}
+                  />
+                  {gotoText ? (
+                    <Pressable onPress={goToChapterNumber} hitSlop={8}>
+                      <Ionicons name="arrow-forward-circle" size={22} color={appTheme.accent} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                {progress ? (
+                  <Pressable style={styles.gotoCurrentBtn} onPress={jumpToCurrent} hitSlop={6}>
+                    <Ionicons name="bookmark" size={14} color={appTheme.accentText} />
+                    <Text style={styles.gotoCurrentText}>Ch. {progress.chapterOrder}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+
+            {renderPageNav()}
           </View>
         }
+        ListFooterComponent={pageChapters.length > 0 ? renderPageNav() : null}
         ListEmptyComponent={
           !refreshing ? (
             <Text style={styles.emptyChapters}>
@@ -304,6 +438,56 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   chaptersTitle: { color: appTheme.text, fontSize: 18, fontWeight: '700' },
+  orderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: appTheme.card,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  orderText: { color: appTheme.text, fontSize: 12, fontWeight: '600' },
+  gotoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, marginTop: 4, marginBottom: 4 },
+  gotoInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: appTheme.card,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 42,
+  },
+  gotoInput: { flex: 1, color: appTheme.text, fontSize: 14, paddingVertical: 0 },
+  gotoCurrentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: appTheme.accent,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 42,
+  },
+  gotoCurrentText: { color: appTheme.accentText, fontSize: 13, fontWeight: '700' },
+  pager: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  pagerBtn: {
+    width: 40,
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: appTheme.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pagerBtnDisabled: { opacity: 0.35 },
+  pagerLabel: { color: appTheme.text, fontSize: 13, fontWeight: '600', minWidth: 96, textAlign: 'center' },
   emptyChapters: { color: appTheme.textMuted, textAlign: 'center', padding: 24, lineHeight: 20 },
   chapterRow: {
     flexDirection: 'row',

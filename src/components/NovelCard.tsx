@@ -25,9 +25,14 @@ export function NovelCard({ title, coverUri, subtitle, badge, progress, onPress 
           </View>
         ) : null}
         {pct > 0 ? (
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${pct}%` }]} />
-          </View>
+          <>
+            <View style={styles.pctPill}>
+              <Text style={styles.pctText}>{pct}%</Text>
+            </View>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${pct}%` }]} />
+            </View>
+          </>
         ) : null}
       </View>
       <Text style={styles.title} numberOfLines={2}>
@@ -71,10 +76,25 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: 4,
-    backgroundColor: '#00000066',
+    height: 5,
+    backgroundColor: '#00000088',
     borderBottomLeftRadius: 8,
     borderBottomRightRadius: 8,
     overflow: 'hidden',
   },
+  progressFill: {
+    height: '100%',
+    backgroundColor: appTheme.accent,
+    borderBottomLeftRadius: 8,
+  },
+  pctPill: {
+    position: 'absolute',
+    left: 6,
+    bottom: 10,
+    backgroundColor: '#000000aa',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  pctText: { color: '#ffffff', fontSize: 10, fontWeight: '700' },
 });

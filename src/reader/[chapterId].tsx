@@ -163,7 +163,15 @@ export default function ReaderScreen() {
           </ScrollView>
 
           {showTools ? (
-            <ReaderTools reader={reader.id} onClose={() => setShowTools(false)} />
+            <ReaderTools
+              reader={reader.id}
+              onClose={() => setShowTools(false)}
+              onPrev={() => go(-1)}
+              onNext={() => go(1)}
+              hasPrev={hasPrev}
+              hasNext={hasNext}
+              position={idx >= 0 ? `Ch. ${chapter?.orderIndex ?? idx + 1} / ${siblings.length}` : ''}
+            />
           ) : null}
         </>
       )}
@@ -171,20 +179,60 @@ export default function ReaderScreen() {
   );
 }
 
-function ReaderTools({ reader, onClose }: { reader: ReaderThemeId; onClose: () => void }) {
+function ReaderTools({
+  reader,
+  onClose,
+  onPrev,
+  onNext,
+  hasPrev,
+  hasNext,
+  position,
+}: {
+  reader: ReaderThemeId;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  hasPrev: boolean;
+  hasNext: boolean;
+  position: string;
+}) {
   const s = useReaderSettings();
   return (
-    <SafeAreaView style={styles.toolsWrap} edges={['top', 'bottom']} pointerEvents="box-none">
+    <SafeAreaView style={styles.toolsWrap} edges={['top', 'bottom']}>
       <View style={styles.topBar}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={appTheme.text} />
         </Pressable>
+        {position ? <Text style={styles.topBarTitle}>{position}</Text> : <View />}
         <Pressable onPress={onClose} hitSlop={12}>
           <Ionicons name="close" size={24} color={appTheme.text} />
         </Pressable>
       </View>
 
+      {/* Tap the exposed reading area to dismiss the tools. */}
+      <Pressable style={styles.toolsBackdrop} onPress={onClose} />
+
       <View style={styles.panel}>
+        {/* Chapter navigation — no need to scroll to the bottom to move on. */}
+        <View style={styles.navToolRow}>
+          <Pressable
+            style={[styles.navToolBtn, !hasPrev && styles.navDisabled]}
+            onPress={onPrev}
+            disabled={!hasPrev}
+          >
+            <Ionicons name="chevron-back" size={18} color={appTheme.text} />
+            <Text style={styles.navToolText}>Previous</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.navToolBtn, !hasNext && styles.navDisabled]}
+            onPress={onNext}
+            disabled={!hasNext}
+          >
+            <Text style={styles.navToolText}>Next</Text>
+            <Ionicons name="chevron-forward" size={18} color={appTheme.text} />
+          </Pressable>
+        </View>
+
         {/* Font size */}
         <View style={styles.toolRow}>
           <Text style={styles.toolLabel}>Text size</Text>
@@ -293,13 +341,35 @@ const styles = StyleSheet.create({
   navText: { fontSize: 15, fontWeight: '600' },
 
   toolsWrap: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between' },
+  toolsBackdrop: { flex: 1 },
   topBar: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
     backgroundColor: appTheme.surface + 'ee',
   },
+  topBarTitle: { color: appTheme.text, fontSize: 14, fontWeight: '700' },
+  navToolRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    marginBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: appTheme.border,
+  },
+  navToolBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: appTheme.card,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  navToolText: { color: appTheme.text, fontSize: 14, fontWeight: '600' },
   panel: {
     backgroundColor: appTheme.surface,
     borderTopLeftRadius: 18,
