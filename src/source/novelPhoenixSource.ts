@@ -9,6 +9,7 @@
 import {
   ChapterContent,
   ChapterMeta,
+  GetChaptersOptions,
   NovelDetail,
   NovelSource,
   NovelSummary,
@@ -40,7 +41,25 @@ const SEL = {
   chapterDate: '.chapter-update', // has a real `datetime` attribute
 
   chapterContent: '.d-chapter-content',
+
+  // Pagination widget on the /chapters page. It renders a windowed list of
+  // page-number links plus a trailing `Next »` control; on long novels the
+  // window inserts `...` ellipsis <li> nodes that carry NO <a href>.
+  pager: '.pagination a, ul.pagination a, .paging a',
 };
+
+/** How many chapters the source packs onto one /chapters page. */
+const CHAPTERS_PER_PAGE = 100;
+
+/** Polite delay between page requests so we don't trip Cloudflare's limiter. */
+const PAGE_DELAY_MS = 400;
+
+/** Hard safety cap against a pathological pagination loop. */
+const MAX_PAGES = 5000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export class NovelPhoenixSource implements NovelSource {
   readonly id = 'novelphoenix';
@@ -118,28 +137,37 @@ export class NovelPhoenixSource implements NovelSource {
     };
   }
 
-  async getChapters(novel: NovelDetail): Promise<ChapterMeta[]> {
+  async getChapters(
+    novel: NovelDetail,
+    opts: GetChaptersOptions = {},
+  ): Promise<ChapterMeta[]> {
     // Plain server-rendered, paginated HTML — no AJAX fragment/admin-ajax
-    // involved here, unlike Madara.
+    // involved here, unlike Madara. The source packs 100 chapters per page at
+    // `/chapters?page=N`.
     //
-    // We do NOT trust the numeric pagination widget to decide when to stop.
-    // On long novels its rendered page-number window truncates (e.g.
-    // `1 … 9 10 11 … 25`), so probing for `page+1` as a literal `.page-item`
-    // falsely reported "no next page" partway through and silently dropped
-    // the tail — a 2500-chapter novel stopped at ~1100. Instead we walk pages
-    // until one yields no *new* chapters (empty, or an out-of-range page that
-    // the site clamps back to the last page), deduping by id along the way.
-    const chapters: ChapterMeta[] = [];
-    const seen = new Set<string>();
+    // We do NOT infer the stop point from the numeric pagination widget's
+    // layout. On long novels its rendered window inserts `...` ellipsis <li>
+    // nodes with no <a href> (first appearing around page 11), so any logic
+    // keyed off list position — "last <li>", "next sibling" — tripped over the
+    // empty nodes and stopped at page 11, dropping the tail (a 2555-chapter
+    // novel stopped at ~1100). Instead we:
+    //   1. Compute the true last page from the total-chapters count (or, failing
+    //      that, the highest numbered page link) and loop 1..lastPage.
+    //   2. Fall back to an explicit `Next »` link probe (an anchor that must
+    //      have a real href — ellipsis nodes are filtered out) when the total
+    //      can't be read.
+    //   3. De-dupe by chapter number so a repeated/clamped page can't silently
+    //      end the crawl, and a failed page doesn't corrupt the result.
     const base = novel.url.replace(/\/+$/, '');
-    const MAX_PAGES = 2000; // hard safety cap against a pathological loop
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = `${base}/chapters` + (page > 1 ? `?page=${page}` : '');
-      const html = await fetchText(url, { referer: novel.url });
-      const root = parseHtml(html);
-      const rows = root.querySelectorAll(SEL.chapterItem);
-      if (rows.length === 0) break;
+    const pageUrl = (p: number) =>
+      `${base}/chapters` + (p > 1 ? `?page=${p}` : '');
 
+    const chapters: ChapterMeta[] = [];
+    const seenIds = new Set<string>();
+    const seenNumbers = new Set<number>();
+
+    const ingest = (root: HTMLElement): number => {
+      const rows = root.querySelectorAll(SEL.chapterItem);
       let added = 0;
       for (const row of rows) {
         const link = row.querySelector(SEL.chapterLink);
@@ -147,13 +175,18 @@ export class NovelPhoenixSource implements NovelSource {
         if (!href) continue;
         const chUrl = absoluteUrl(BASE_URL, href);
         const id = `${novel.id}:${this.slugOf(chUrl)}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
+        const title =
+          text(row.querySelector(SEL.chapterTitle)) || text(link) || 'Chapter';
+        const num = this.chapterNumber(title, chUrl);
+        if (seenIds.has(id)) continue;
+        if (num != null && seenNumbers.has(num)) continue;
+        seenIds.add(id);
+        if (num != null) seenNumbers.add(num);
         chapters.push({
           id,
           novelId: novel.id,
           url: chUrl,
-          title: text(row.querySelector(SEL.chapterTitle)) || text(link) || 'Chapter',
+          title,
           order: 0,
           publishedLabel:
             attr(row.querySelector(SEL.chapterDate), 'datetime') ||
@@ -162,14 +195,55 @@ export class NovelPhoenixSource implements NovelSource {
         });
         added++;
       }
+      return added;
+    };
 
-      // No new chapters on this page → we've reached (or passed) the end.
+    // Assign 1-based reading order over the accumulated list. The site lists
+    // oldest-first (chapter-no ascends 1..100 on page 1), so insertion order is
+    // already correct — no reverse() needed, unlike Madara's newest-first pages.
+    const finalize = () => chapters.forEach((c, i) => (c.order = i + 1));
+    const emit = async () => {
+      finalize();
+      await opts.onProgress?.(chapters.slice());
+    };
+
+    // Page 1 is required — if it can't be fetched there's nothing to salvage.
+    const firstRoot = parseHtml(await fetchText(pageUrl(1), { referer: novel.url }));
+    ingest(firstRoot);
+    const lastPage = this.detectLastPage(firstRoot);
+    let hasNext = this.hasNextPage(firstRoot);
+    await emit();
+
+    for (let page = 2; page <= MAX_PAGES; page++) {
+      if (lastPage != null) {
+        if (page > lastPage) break;
+      } else if (!hasNext) {
+        break;
+      }
+
+      await delay(PAGE_DELAY_MS);
+
+      let root: HTMLElement;
+      try {
+        root = parseHtml(await fetchText(pageUrl(page), { referer: novel.url }));
+      } catch {
+        // fetchText already retried rate-limits/challenges with backoff. If it
+        // still failed, keep everything gathered so far (already persisted via
+        // onProgress) rather than discarding the whole import.
+        break;
+      }
+
+      const added = ingest(root);
+      hasNext = this.hasNextPage(root);
+
+      // An out-of-range page the site clamps back to the last page yields no
+      // new chapters — stop once we know there's no more real content.
       if (added === 0) break;
+
+      await emit();
     }
 
-    // Already oldest-first on this site (chapter-no ascends 1..100 on page 1)
-    // — no reverse() needed, unlike Madara's newest-first listings.
-    chapters.forEach((c, i) => (c.order = i + 1));
+    finalize();
     return chapters;
   }
 
@@ -182,6 +256,76 @@ export class NovelPhoenixSource implements NovelSource {
   }
 
   // ---- helpers ----
+
+  /**
+   * Work out the true last page of the chapter list without relying on the
+   * pager's rendered layout. Preferred signal is the "A total of N chapters
+   * have been translated" line; failing that, the highest numbered page link.
+   * Returns undefined when neither is present (caller then walks via Next »).
+   */
+  private detectLastPage(root: HTMLElement): number | undefined {
+    const total = this.totalChapterCount(root);
+    if (total != null && total > 0) {
+      return Math.max(1, Math.ceil(total / CHAPTERS_PER_PAGE));
+    }
+
+    let maxPage = 0;
+    for (const a of root.querySelectorAll(SEL.pager)) {
+      const href = attr(a, 'href');
+      if (!href) continue; // skip the `...` ellipsis / bare <li> nodes
+      const m = href.match(/[?&]page=(\d+)/);
+      if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
+    }
+    return maxPage > 0 ? maxPage : undefined;
+  }
+
+  /** Parse the "A total of N chapters have been translated" figure, if shown. */
+  private totalChapterCount(root: HTMLElement): number | undefined {
+    const body = text(root);
+    const m = body.match(/total of\s+([\d,]+)\s+chapters?/i);
+    if (!m) return undefined;
+    const n = parseInt(m[1].replace(/,/g, ''), 10);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  /**
+   * Is there a *real* next page? We target the `Next »` control explicitly by
+   * its label rather than list position, and only count it when it carries an
+   * actual href. On the last page the source renders `Next »` as a bare node
+   * with no anchor — that (and only that) is the stop signal. Ellipsis `...`
+   * nodes have no href and are ignored here.
+   */
+  private hasNextPage(root: HTMLElement): boolean {
+    for (const a of root.querySelectorAll(SEL.pager)) {
+      const href = attr(a, 'href');
+      if (!href) continue;
+      const rel = (attr(a, 'rel') || '').toLowerCase();
+      const label = text(a).toLowerCase();
+      const aria = (attr(a, 'aria-label') || '').toLowerCase();
+      if (
+        rel.includes('next') ||
+        aria.includes('next') ||
+        /next|»|›/.test(label)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Extract a chapter's numeric position from its title ("Chapter 1203") or,
+   * failing that, a trailing number in its URL slug (…-chapter-1203). Used to
+   * de-dupe across pages. Returns undefined when no number is present.
+   */
+  private chapterNumber(title: string, url: string): number | undefined {
+    const fromTitle = title.match(/chapter\s*#?\s*(\d+(?:\.\d+)?)/i);
+    if (fromTitle) return parseFloat(fromTitle[1]);
+    const slug = this.slugOf(url);
+    const fromSlug = slug.match(/(?:^|[^\d])(\d+(?:\.\d+)?)(?!.*\d)/);
+    if (fromSlug) return parseFloat(fromSlug[1]);
+    return undefined;
+  }
 
   private slugOf(url: string): string {
     const clean = url.split('?')[0].replace(/\/+$/, '');

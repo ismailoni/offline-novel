@@ -51,6 +51,15 @@ export interface PagedResult<T> {
   nextPage?: number;
 }
 
+export interface GetChaptersOptions {
+  /**
+   * Invoked after each page of chapters is fetched with the full accumulated
+   * (de-duped, ordered) list so far. Lets the caller persist progressively so a
+   * mid-crawl failure keeps what already succeeded instead of losing everything.
+   */
+  onProgress?: (chapters: ChapterMeta[]) => void | Promise<void>;
+}
+
 export interface NovelSource {
   readonly id: string;
   readonly name: string;
@@ -60,6 +69,6 @@ export interface NovelSource {
   search(query: string, page: number): Promise<PagedResult<NovelSummary>>;
   getNovel(url: string): Promise<NovelDetail>;
   /** Full chapter list, ordered oldest -> newest. */
-  getChapters(novel: NovelDetail): Promise<ChapterMeta[]>;
+  getChapters(novel: NovelDetail, opts?: GetChaptersOptions): Promise<ChapterMeta[]>;
   getChapterContent(chapter: ChapterMeta): Promise<ChapterContent>;
 }

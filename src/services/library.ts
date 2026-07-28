@@ -3,7 +3,7 @@
  * hydrating detail views. Sits between the UI and the db/source layers.
  */
 import { getSource } from '@/source/registry';
-import { NovelDetail } from '@/source/types';
+import { ChapterMeta, NovelDetail } from '@/source/types';
 import * as novelsDb from '@/db/novels';
 import * as chaptersDb from '@/db/chapters';
 import { downloadCover, deleteNovelFiles } from '@/storage/files';
@@ -18,12 +18,24 @@ export async function loadAndCacheNovel(
   const detail: NovelDetail = await source.getNovel(url);
   await novelsDb.upsertNovel(detail);
 
-  const chapters = await source.getChapters(detail);
-  await chaptersDb.syncChapters(detail.id, chapters);
-  await novelsDb.setChapterCount(detail.id, chapters.length);
+  // Persist chapters page-by-page as they arrive. If the crawl is interrupted
+  // mid-way (e.g. a Cloudflare 429 that outlasts our retries), whatever pages
+  // already succeeded stay saved and the import can resume on the next open,
+  // instead of collapsing the whole novel back to 0 chapters.
+  let persistedCount = 0;
+  const persist = async (chapters: ChapterMeta[]) => {
+    await chaptersDb.syncChapters(detail.id, chapters);
+    await novelsDb.setChapterCount(detail.id, chapters.length);
+    persistedCount = chapters.length;
+  };
+
+  const chapters = await source.getChapters(detail, {
+    onProgress: (chs) => persist(chs),
+  });
+  await persist(chapters);
 
   const novel = await novelsDb.getNovel(detail.id);
-  return { novel: novel!, chapterCount: chapters.length };
+  return { novel: novel!, chapterCount: persistedCount };
 }
 
 export async function addToLibrary(novelId: string): Promise<void> {
