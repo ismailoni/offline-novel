@@ -24,12 +24,21 @@ export async function checkNovel(novelId: string): Promise<UpdateResult | null> 
   const previousCount = await chaptersDb.countChapters(novelId);
 
   const detail = await source.getNovel(novel.url);
-  const chapters = await source.getChapters(detail);
+  const { chapters, complete } = await source.getChapters(detail);
 
-  await chaptersDb.syncChapters(novelId, chapters);
-  await novelsDb.setChapterCount(novelId, chapters.length);
+  if (complete) {
+    // Only a fully-crawled list is authoritative enough to replace what we have.
+    await chaptersDb.syncChapters(novelId, chapters);
+    await novelsDb.setChapterCount(novelId, chapters.length);
+  } else {
+    // An interrupted crawl must not truncate a good stored list: merge what we
+    // got (additively) and keep the count at whatever we actually hold.
+    await chaptersDb.mergeChapters(novelId, chapters);
+    await novelsDb.setChapterCount(novelId, await chaptersDb.countChapters(novelId));
+  }
 
-  const newChapters = chapters.length - previousCount;
+  const newCount = await chaptersDb.countChapters(novelId);
+  const newChapters = newCount - previousCount;
   const hasUpdates = newChapters > 0;
   await novelsDb.markChecked(novelId, hasUpdates || novel.hasUpdates);
 
@@ -38,7 +47,7 @@ export async function checkNovel(novelId: string): Promise<UpdateResult | null> 
     novelId,
     title: novel.title,
     previousCount,
-    newCount: chapters.length,
+    newCount,
     newChapters,
   };
 }

@@ -60,6 +60,18 @@ export interface GetChaptersOptions {
   onProgress?: (chapters: ChapterMeta[]) => void | Promise<void>;
 }
 
+export interface ChapterListResult {
+  /** The accumulated, de-duped, ordered chapter list. */
+  chapters: ChapterMeta[];
+  /**
+   * True only when the crawl reached the natural end of the list. False when a
+   * page fetch failed (e.g. 429 retries exhausted) and the crawl stopped early,
+   * meaning `chapters` may be a partial set that must NOT overwrite a more
+   * complete stored list.
+   */
+  complete: boolean;
+}
+
 export interface NovelSource {
   readonly id: string;
   readonly name: string;
@@ -68,7 +80,7 @@ export interface NovelSource {
   getLatest(page: number): Promise<PagedResult<NovelSummary>>;
   search(query: string, page: number): Promise<PagedResult<NovelSummary>>;
   getNovel(url: string): Promise<NovelDetail>;
-  /** Full chapter list, ordered oldest -> newest. */
-  getChapters(novel: NovelDetail, opts?: GetChaptersOptions): Promise<ChapterMeta[]>;
+  /** Full chapter list, ordered oldest -> newest, plus whether the crawl finished. */
+  getChapters(novel: NovelDetail, opts?: GetChaptersOptions): Promise<ChapterListResult>;
   getChapterContent(chapter: ChapterMeta): Promise<ChapterContent>;
 }

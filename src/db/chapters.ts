@@ -64,6 +64,46 @@ export async function syncChapters(
   });
 }
 
+/**
+ * Upsert chapters WITHOUT deleting any existing rows. Grows and updates the
+ * stored list but never shrinks it, so an interrupted (incomplete) crawl can
+ * persist what it fetched without truncating a previously-complete list.
+ * Each chapter's downloaded content path is preserved. Use this for
+ * progressive/partial persistence; use `syncChapters` for the authoritative
+ * full replace once a crawl is known to be complete.
+ */
+export async function mergeChapters(
+  novelId: string,
+  chapters: ChapterMeta[],
+): Promise<void> {
+  if (chapters.length === 0) return;
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    for (const c of chapters) {
+      // ON CONFLICT keeps the existing content_path/downloaded_at (we don't
+      // list them in the SET clause) while refreshing the list metadata.
+      await db.runAsync(
+        `INSERT INTO chapters
+           (id, novel_id, url, title, order_index, published_label, content_path, downloaded_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+         ON CONFLICT(id) DO UPDATE SET
+           url = excluded.url,
+           title = excluded.title,
+           order_index = excluded.order_index,
+           published_label = excluded.published_label`,
+        [
+          c.id,
+          novelId,
+          c.url,
+          c.title,
+          c.order,
+          c.publishedLabel ?? null,
+        ],
+      );
+    }
+  });
+}
+
 export async function getChapters(novelId: string): Promise<ChapterRecord[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<ChapterRow>(

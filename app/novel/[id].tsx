@@ -39,6 +39,9 @@ export default function NovelDetailScreen() {
   const [progress, setProgress] = useState<ProgressRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // True when the last chapter-list sync couldn't fetch the whole list (e.g.
+  // the source rate-limited us). Drives the "list may be incomplete" banner.
+  const [incomplete, setIncomplete] = useState(false);
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [descExpanded, setDescExpanded] = useState(false);
   const [showDlOptions, setShowDlOptions] = useState(false);
@@ -69,15 +72,20 @@ export default function NovelDetailScreen() {
     if (!existing) return;
     setRefreshing(true);
     try {
-      await loadAndCacheNovel(existing.sourceId, existing.url);
+      const res = await loadAndCacheNovel(existing.sourceId, existing.url);
       await clearUpdateFlag(id);
       await hydrate();
+      // Full crawl -> the list is authoritative; partial crawl -> flag it so
+      // the user knows what they're seeing isn't the whole list.
+      setIncomplete(!res.complete);
     } catch {
-      // keep cached data on failure
+      // Refresh failed outright (offline, or page 1 unreachable). Keep whatever
+      // is cached; only warn about completeness when we have nothing to show.
+      setIncomplete((prev) => prev || chapters.length === 0);
     } finally {
       setRefreshing(false);
     }
-  }, [id, hydrate]);
+  }, [id, hydrate, chapters.length]);
 
   useFocusEffect(
     useCallback(() => {
@@ -381,6 +389,24 @@ export default function NovelDetailScreen() {
               </Pressable>
             </View>
 
+            {incomplete ? (
+              <View style={styles.incompleteBanner}>
+                <Ionicons name="warning-outline" size={18} color={appTheme.danger} />
+                <Text style={styles.incompleteText}>
+                  Couldn't load the full chapter list — the source may be rate
+                  limiting. {chapters.length > 0 ? 'The list below may be incomplete.' : ''}
+                </Text>
+                <Pressable
+                  style={styles.retryBtn}
+                  onPress={refresh}
+                  disabled={refreshing}
+                  hitSlop={6}
+                >
+                  <Text style={styles.retryText}>{refreshing ? 'Retrying…' : 'Retry'}</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
             {chapters.length > 0 ? (
               <View style={styles.gotoRow}>
                 <View style={styles.gotoInputWrap}>
@@ -415,12 +441,22 @@ export default function NovelDetailScreen() {
         }
         ListFooterComponent={pageChapters.length > 0 ? renderPageNav() : null}
         ListEmptyComponent={
-          !refreshing ? (
+          refreshing ? (
+            <View style={styles.emptyLoading}>
+              <ActivityIndicator color={appTheme.accent} />
+              <Text style={styles.emptyChapters}>Loading all chapters…</Text>
+            </View>
+          ) : incomplete ? (
+            <Text style={styles.emptyChapters}>
+              No chapters could be loaded. Tap Retry above once you have a
+              stable connection.
+            </Text>
+          ) : (
             <Text style={styles.emptyChapters}>
               No chapters loaded yet. Pull the novel again once you have a
               connection.
             </Text>
-          ) : null
+          )
         }
         renderItem={({ item }) => {
           const isCurrent = progress?.chapterId === item.id;
@@ -634,7 +670,29 @@ const styles = StyleSheet.create({
   },
   pagerBtnDisabled: { opacity: 0.35 },
   pagerLabel: { color: appTheme.text, fontSize: 13, fontWeight: '600', minWidth: 96, textAlign: 'center' },
+  emptyLoading: { alignItems: 'center', paddingTop: 24, gap: 12 },
   emptyChapters: { color: appTheme.textMuted, textAlign: 'center', padding: 24, lineHeight: 20 },
+  incompleteBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 8,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: appTheme.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: appTheme.danger,
+  },
+  incompleteText: { flex: 1, color: appTheme.text, fontSize: 12, lineHeight: 17 },
+  retryBtn: {
+    backgroundColor: appTheme.accent,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  retryText: { color: appTheme.accentText, fontSize: 13, fontWeight: '700' },
   chapterRow: {
     flexDirection: 'row',
     alignItems: 'center',

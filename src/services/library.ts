@@ -9,33 +9,54 @@ import * as chaptersDb from '@/db/chapters';
 import { downloadCover, deleteNovelFiles } from '@/storage/files';
 import { NovelRecord } from '@/db/types';
 
+export interface LoadNovelResult {
+  novel: NovelRecord;
+  chapterCount: number;
+  /**
+   * False when the source could not crawl the whole chapter list (e.g. 429
+   * retries were exhausted mid-way). The chapters that did load are still
+   * persisted, but the caller should surface the list as incomplete rather
+   * than presenting the partial set as the finished thing.
+   */
+  complete: boolean;
+}
+
 /** Fetch a novel + its chapters from the source and persist everything. */
 export async function loadAndCacheNovel(
   sourceId: string,
   url: string,
-): Promise<{ novel: NovelRecord; chapterCount: number }> {
+): Promise<LoadNovelResult> {
   const source = getSource(sourceId);
   const detail: NovelDetail = await source.getNovel(url);
   await novelsDb.upsertNovel(detail);
 
-  // Persist chapters page-by-page as they arrive. If the crawl is interrupted
-  // mid-way (e.g. a Cloudflare 429 that outlasts our retries), whatever pages
-  // already succeeded stay saved and the import can resume on the next open,
-  // instead of collapsing the whole novel back to 0 chapters.
-  let persistedCount = 0;
-  const persist = async (chapters: ChapterMeta[]) => {
+  // Persist chapters page-by-page as they arrive, additively — a merge never
+  // deletes rows, so an interrupted crawl (e.g. a Cloudflare 429 that outlasts
+  // our retries) keeps what already succeeded AND cannot shrink a previously
+  // complete list back down to the partial set it managed to re-fetch.
+  const persistPartial = (chapters: ChapterMeta[]) =>
+    chaptersDb.mergeChapters(detail.id, chapters);
+
+  const { chapters, complete } = await source.getChapters(detail, {
+    onProgress: persistPartial,
+  });
+
+  if (complete) {
+    // Authoritative replace: prunes chapters the source has genuinely removed
+    // and pins the count to the fully-crawled list.
     await chaptersDb.syncChapters(detail.id, chapters);
     await novelsDb.setChapterCount(detail.id, chapters.length);
-    persistedCount = chapters.length;
-  };
+  } else {
+    // Partial crawl: merge (never shrink) and never lower the reported count
+    // below what we already had stored.
+    await persistPartial(chapters);
+    const stored = await chaptersDb.countChapters(detail.id);
+    await novelsDb.setChapterCount(detail.id, stored);
+  }
 
-  const chapters = await source.getChapters(detail, {
-    onProgress: (chs) => persist(chs),
-  });
-  await persist(chapters);
-
+  const finalCount = await chaptersDb.countChapters(detail.id);
   const novel = await novelsDb.getNovel(detail.id);
-  return { novel: novel!, chapterCount: persistedCount };
+  return { novel: novel!, chapterCount: finalCount, complete };
 }
 
 export async function addToLibrary(novelId: string): Promise<void> {

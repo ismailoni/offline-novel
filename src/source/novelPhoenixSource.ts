@@ -8,6 +8,7 @@
  */
 import {
   ChapterContent,
+  ChapterListResult,
   ChapterMeta,
   GetChaptersOptions,
   NovelDetail,
@@ -140,7 +141,7 @@ export class NovelPhoenixSource implements NovelSource {
   async getChapters(
     novel: NovelDetail,
     opts: GetChaptersOptions = {},
-  ): Promise<ChapterMeta[]> {
+  ): Promise<ChapterListResult> {
     // Plain server-rendered, paginated HTML — no AJAX fragment/admin-ajax
     // involved here, unlike Madara. The source packs 100 chapters per page at
     // `/chapters?page=N`.
@@ -214,6 +215,12 @@ export class NovelPhoenixSource implements NovelSource {
     let hasNext = this.hasNextPage(firstRoot);
     await emit();
 
+    // Tracks whether the crawl ran to its natural end. Flipped to false only
+    // when a page fetch fails after fetchText exhausts its 429/challenge
+    // retries, so the caller can tell a partial list from a full one and avoid
+    // overwriting a more-complete stored set.
+    let complete = true;
+
     for (let page = 2; page <= MAX_PAGES; page++) {
       if (lastPage != null) {
         if (page > lastPage) break;
@@ -229,7 +236,9 @@ export class NovelPhoenixSource implements NovelSource {
       } catch {
         // fetchText already retried rate-limits/challenges with backoff. If it
         // still failed, keep everything gathered so far (already persisted via
-        // onProgress) rather than discarding the whole import.
+        // onProgress) but flag the crawl as incomplete so the partial set does
+        // not clobber a fuller stored list.
+        complete = false;
         break;
       }
 
@@ -241,10 +250,14 @@ export class NovelPhoenixSource implements NovelSource {
       if (added === 0) break;
 
       await emit();
+
+      // Reached the pathological page cap without a natural stop: treat the
+      // result as incomplete rather than silently truncating.
+      if (page === MAX_PAGES) complete = false;
     }
 
     finalize();
-    return chapters;
+    return { chapters, complete };
   }
 
   async getChapterContent(chapter: ChapterMeta): Promise<ChapterContent> {
